@@ -1,4 +1,7 @@
 import json
+import os
+import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -6,8 +9,9 @@ from pathlib import Path
 
 from ds339 import WIDTH, HEIGHT, packet, parse_edid
 from configure_hooks import codex_text, claude_text
-from state import connect, hook_event, record, snapshot
-from watch import Tail
+from state import connect, hook_event, record, snapshot, reconcile_owners
+from process_owner import process_birth, process_matches
+from watch import Tail, Watcher
 
 ARTIFACTS = Path(__file__).resolve().parents[1] / '.local' / 'agent-screen-tests'
 ARTIFACTS.mkdir(parents=True, exist_ok=True)
@@ -66,6 +70,65 @@ class StateTests(unittest.TestCase):
         self.event('SessionStart', at=100)
         self.event('SessionEnd', at=101)
         self.assertEqual(snapshot(self.db, now=102)['sessions'], [])
+
+    def test_session_end_is_not_blocked_by_an_old_turn_id(self):
+        self.event('UserPromptSubmit', turn_id='new', at=100)
+        self.event('SessionEnd', turn_id='old', at=101)
+        self.assertEqual(snapshot(self.db, now=102)['sessions'], [])
+
+    def test_live_owner_keeps_completion_until_the_process_exits(self):
+        self.event('Stop', at=100, owner=(123, 456))
+        self.assertEqual(snapshot(self.db, now=1000)['state'], 'done')
+        reconcile_owners(self.db, lambda pid, birth: False, now=1001)
+        self.assertEqual(snapshot(self.db, now=1002)['sessions'], [])
+
+    def test_unknown_process_access_does_not_mean_exit(self):
+        self.event('Stop', at=100, owner=(123, 456))
+        reconcile_owners(self.db, lambda pid, birth: None, now=101)
+        self.assertEqual(snapshot(self.db, now=102)['state'], 'done')
+
+    def test_buffered_completion_does_not_revive_an_exited_process(self):
+        self.event('Stop', at=100, owner=(123, 456))
+        reconcile_owners(self.db, lambda pid, birth: False, now=101)
+        self.event('Stop', at=102, origin='local-session')
+        self.event('PostToolUse', at=103, owner=(123, 456))
+        self.assertEqual(snapshot(self.db, now=104)['sessions'], [])
+        self.event('UserPromptSubmit', at=105, owner=(789, 1000))
+        self.assertEqual(snapshot(self.db, now=106)['state'], 'working')
+
+    def test_reused_pid_does_not_close_a_new_owner(self):
+        self.event('Stop', at=100, owner=(123, 456))
+        self.event('UserPromptSubmit', at=101, owner=(123, 789))
+        reconcile_owners(self.db, lambda pid, birth: birth == 789, now=102)
+        self.assertEqual(snapshot(self.db, now=103)['state'], 'working')
+
+    def test_one_owner_exit_does_not_close_another_live_owner(self):
+        self.event('UserPromptSubmit', at=100, owner=(123, 456))
+        self.event('Stop', at=101, owner=(789, 1000))
+        reconcile_owners(self.db, lambda pid, birth: pid == 789, now=102)
+        self.assertEqual(snapshot(self.db, now=103)['state'], 'done')
+
+    @unittest.skipUnless(os.name == 'nt', 'Native Windows process identity test')
+    def test_real_process_exit_clears_completed_session_without_an_end_hook(self):
+        child = subprocess.Popen([sys.executable, '-c', 'import sys; sys.stdin.buffer.read(1)'],
+                                 stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL, creationflags=subprocess.CREATE_NO_WINDOW)
+        try:
+            birth = process_birth(child.pid)
+            self.assertTrue(birth)
+            self.event('Stop', at=100, owner=(child.pid, birth))
+            watcher = Watcher(home=self.root)
+            watcher.process_monitor.last_discovery = time.time()
+            watcher.poll(self.db)
+            self.assertEqual(snapshot(self.db, now=102)['state'], 'done')
+            child.stdin.close()
+            child.wait(timeout=5)
+            watcher.poll(self.db)
+            self.assertEqual(snapshot(self.db, now=104)['sessions'], [])
+        finally:
+            if child.poll() is None:
+                child.stdin.close()
+                child.wait(timeout=5)
 
     def test_old_completion_leaves_the_display_instead_of_becoming_idle(self):
         self.event('Stop', at=100)

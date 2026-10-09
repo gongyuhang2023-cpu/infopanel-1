@@ -41,6 +41,11 @@ def render(data, demo=False):
     status = data['state']
     accent = COLORS[status]
     sessions = data['sessions']
+    if not sessions:
+        d.text((480, 188), '无 AI 会话', font=font(48, True), fill=MUTED, anchor='mm')
+        if demo:
+            d.text((28, 352), '演示', font=font(18), fill=MUTED, anchor='lm')
+        return image
     lamps = sessions[:6]
     columns = 1 if len(lamps) <= 1 else 2 if len(lamps) <= 4 else 3
     lamp_rows = 1 if len(lamps) <= 2 else 2
@@ -67,8 +72,6 @@ def render(data, demo=False):
     card_count = min(len(sessions), 4)
     card_height, gap = (78, 10) if card_count == 4 else (84, 14)
     top = (376 - (card_count * card_height + max(0, card_count - 1) * gap)) // 2
-    if not sessions:
-        d.text((651, 169), '等待会话', font=font(34, True), fill=WHITE, anchor='mm')
     for i, session in enumerate(sessions[:4]):
         y = top + i * (card_height + gap)
         color = COLORS[session['state']]

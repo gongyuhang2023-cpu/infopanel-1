@@ -19,10 +19,53 @@ def connect(root: Path):
         state TEXT NOT NULL, event TEXT NOT NULL, origin TEXT NOT NULL,
         updated REAL NOT NULL, started REAL NOT NULL, turn_id TEXT NOT NULL,
         pending INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(agent,sid))''')
+    db.execute('''CREATE TABLE IF NOT EXISTS session_owners (
+        agent TEXT NOT NULL, sid TEXT NOT NULL, pid INTEGER NOT NULL,
+        birth INTEGER NOT NULL, observed REAL NOT NULL, source TEXT NOT NULL,
+        closed INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(agent,sid,pid,birth))''')
     return db
 
 
-def record(db, *, agent, sid, event, cwd='', turn_id='', at=None, origin='hook', tool=''):
+def _bind_owner(db, agent, sid, owner, at, source):
+    pid, birth = owner
+    if pid > 0 and birth > 0:
+        db.execute('''INSERT INTO session_owners VALUES (?,?,?,?,?,?,0)
+            ON CONFLICT(agent,sid,pid,birth) DO UPDATE SET
+            observed=excluded.observed,source=excluded.source,closed=0''',
+            (agent, sid, pid, birth, at, source))
+
+
+def bind_owner(db, agent, sid, owner, source='hook'):
+    with db:
+        db.execute('BEGIN IMMEDIATE')
+        _bind_owner(db, agent, sid, owner, time.time(), source)
+
+
+def reconcile_owners(db, is_alive, now=None):
+    """Close a session only after all positively identified owners have exited."""
+    now = time.time() if now is None else now
+    owners = db.execute('SELECT DISTINCT pid,birth FROM session_owners WHERE closed=0').fetchall()
+    dead = [(r['pid'], r['birth']) for r in owners if is_alive(r['pid'], r['birth']) is False]
+    if not dead:
+        return
+    with db:
+        db.execute('BEGIN IMMEDIATE')
+        affected = set()
+        for pid, birth in dead:
+            affected.update(tuple(r) for r in db.execute(
+                'SELECT agent,sid FROM session_owners WHERE pid=? AND birth=? AND closed=0', (pid, birth)))
+            db.execute('UPDATE session_owners SET closed=1 WHERE pid=? AND birth=?', (pid, birth))
+        for agent, sid in affected:
+            other = db.execute('SELECT 1 FROM session_owners WHERE agent=? AND sid=? AND closed=0 LIMIT 1',
+                               (agent, sid)).fetchone()
+            if other is None:
+                db.execute('''UPDATE sessions SET state='idle', event='ProcessExit',
+                    origin='process-exit',updated=?,pending=0
+                    WHERE agent=? AND sid=? AND updated<=?
+                    AND event NOT IN ('SessionEnd','ProcessExit')''', (now, agent, sid, now))
+
+
+def record(db, *, agent, sid, event, cwd='', turn_id='', at=None, origin='hook', tool='', owner=None):
     if agent not in ('codex', 'claude') or not sid:
         return False
     at = time.time() if at is None else at
@@ -33,8 +76,17 @@ def record(db, *, agent, sid, event, cwd='', turn_id='', at=None, origin='hook',
         if old and at < old['updated']:
             return False
         starts = event in ('UserPromptSubmit', 'task_started', 'user_message')
+        if old and old['event'] in ('SessionEnd', 'ProcessExit') and not starts and event != 'SessionStart':
+            # Buffered log output or an orphan hook must not revive a closed session.
+            if owner is None:
+                return False
+            previous_owner = db.execute('''SELECT closed FROM session_owners
+                WHERE agent=? AND sid=? AND pid=? AND birth=?''', (agent, sid, *owner)).fetchone()
+            if previous_owner and previous_owner['closed']:
+                return False
         # A late Stop/PostToolUse from an earlier turn must not end the new turn.
-        if old and old['turn_id'] and turn_id and old['turn_id'] != turn_id and not starts:
+        if (old and old['turn_id'] and turn_id and old['turn_id'] != turn_id
+                and not starts and event not in ('SessionStart', 'SessionEnd')):
             return False
         pending = old['pending'] if old else 0
         status = old['state'] if old else 'idle'
@@ -77,31 +129,39 @@ def record(db, *, agent, sid, event, cwd='', turn_id='', at=None, origin='hook',
           turn_id=excluded.turn_id,pending=excluded.pending''',
           (agent, sid, project[:120], status, event, origin, at, started,
            turn_id or (old['turn_id'] if old else ''), pending))
+        if owner is not None and event != 'SessionEnd':
+            _bind_owner(db, agent, sid, owner, at, 'hook')
+        if event == 'SessionEnd':
+            db.execute('UPDATE session_owners SET closed=1 WHERE agent=? AND sid=?', (agent, sid))
     return True
 
 
 def hook_event(db, agent, payload, event=None):
+    from process_owner import current_owner
     name = event or payload.get('hook_event_name', '')
     if name == 'Notification':
         name = payload.get('notification_type', '')
     return record(db, agent=agent, sid=payload.get('session_id', ''), event=name,
                   cwd=payload.get('cwd', ''), turn_id=payload.get('turn_id', ''),
-                  tool=payload.get('tool_name', ''))
+                  tool=payload.get('tool_name', ''), owner=current_owner(agent))
 
 
 def snapshot(db, now=None):
     now = time.time() if now is None else now
     rows = []
-    for row in db.execute('SELECT * FROM sessions WHERE updated > ?', (now - 86400,)):
-        if row['event'] == 'SessionEnd':
+    live = {(r['agent'], r['sid']) for r in db.execute('SELECT agent,sid FROM session_owners WHERE closed=0')}
+    for row in db.execute('''SELECT s.* FROM sessions s WHERE updated > ? OR EXISTS
+        (SELECT 1 FROM session_owners o WHERE o.agent=s.agent AND o.sid=s.sid AND o.closed=0)''', (now - 86400,)):
+        if row['event'] in ('SessionEnd', 'ProcessExit'):
             continue
         item = dict(row)
         age = max(0, now - item['updated'])
         item['age'] = int(age)
         item['elapsed'] = int(max(0, now - item['started']))
-        if item['state'] == 'done' and age > 600:
+        item['process_bound'] = (item['agent'], item['sid']) in live
+        if item['state'] == 'done' and age > 600 and not item['process_bound']:
             continue
-        elif item['state'] == 'idle' and age > 60:
+        elif item['state'] == 'idle' and age > 60 and not item['process_bound']:
             continue
         elif item['state'] in ('working', 'error') and age > 600:
             item['state'] = 'unknown'

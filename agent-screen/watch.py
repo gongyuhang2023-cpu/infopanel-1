@@ -11,6 +11,7 @@ from datetime import datetime
 from pathlib import Path
 
 from state import record
+from process_owner import ProcessMonitor
 
 
 def timestamp(value, default=None):
@@ -128,6 +129,7 @@ class Watcher:
         self.home = Path.home() if home is None else Path(home)
         self.tails = {}
         self.last_scan = 0
+        self.process_monitor = ProcessMonitor()
 
     def poll(self, db):
         now = time.time()
@@ -156,3 +158,4 @@ class Watcher:
                 tail.poll(db)
             except OSError:
                 continue
+        self.process_monitor.poll(db)
