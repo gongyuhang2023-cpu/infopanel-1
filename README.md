@@ -1,5 +1,17 @@
 # InfoPanel (maintained fork)
 
+## DS339 Agent 信号站
+
+本 fork 新增独立的 **[agent-screen/](agent-screen/README.md)**：把乔思伯 DS339 USB 小屏用于
+Codex / Claude Code 会话状态显示。最多六个自适应信号灯、四行任务详情，支持 Windows 登录自启。
+使用已有驱动，Python 实现，无需编译下面的 WPF 应用。截图为虚构任务演示。
+
+![DS339 Agent 信号站演示](agent-screen/assets/preview.png)
+
+[安装与使用](agent-screen/README.md) · [来源与许可证](agent-screen/NOTICE.md)
+
+---
+
 <p align=center>
   <img src="Images/logo.png" width=60/>
 </p>
