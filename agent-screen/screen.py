@@ -67,7 +67,10 @@ def run(args):
                 watcher.poll(db)
                 data = snapshot(db)
             image = render(data, demo=args.command == 'demo')
-            save_frame(image, root)
+            try:
+                save_frame(image, root)
+            except OSError:
+                pass  # A reader can briefly lock the preview; skip it rather than blank the screen.
             if args.usb and device is None and time.time() >= next_retry:
                 try:
                     owners = vendor_running()
@@ -92,9 +95,12 @@ def run(args):
                         pass
                     device = None
                     next_retry = time.time() + 10
-            write_json(root / 'status.json', {**data, 'pid': os.getpid(), 'running': running,
-                       'usb_connected': device is not None, 'frames_sent': frames,
-                       'last_error': last_error, 'demo': args.command == 'demo', 'started': started})
+            try:
+                write_json(root / 'status.json', {**data, 'pid': os.getpid(), 'running': running,
+                           'usb_connected': device is not None, 'frames_sent': frames,
+                           'last_error': last_error, 'demo': args.command == 'demo', 'started': started})
+            except OSError:
+                pass  # Same for status.json readers; the next second rewrites it.
             time.sleep(max(.01, 1 - (time.monotonic() - tick)))
     except KeyboardInterrupt:
         pass
