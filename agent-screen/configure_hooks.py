@@ -14,7 +14,8 @@ END = '# END AGENT_SCREEN_HOOKS'
 CODEX_EVENTS = ('SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse',
                 'PermissionRequest', 'Stop', 'Interrupt', 'SessionEnd')
 CLAUDE_EVENTS = ('SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse',
-                 'PermissionRequest', 'PostToolUseFailure', 'Stop', 'SessionEnd', 'Notification')
+                 'PermissionRequest', 'PostToolUseFailure', 'Stop', 'StopFailure',
+                 'SessionEnd', 'Notification')
 
 
 def command(script, data_root, agent):

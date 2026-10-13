@@ -164,9 +164,9 @@ def snapshot(db, now=None):
             continue
         elif item['state'] == 'idle' and age > 60 and not item['process_bound']:
             continue
-        elif item['state'] in ('working', 'error') and age > 600:
+        elif item['state'] == 'working' and age > 600:
             item['state'] = 'unknown'
-        elif item['state'] == 'waiting' and age > 3600:
+        elif item['state'] in ('waiting', 'error') and age > 3600:
             item['state'] = 'unknown'
         rows.append(item)
     # Stable lanes: two busy agents should not swap rows on every tool call.

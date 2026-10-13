@@ -166,6 +166,15 @@ class StateTests(unittest.TestCase):
                                      'tool_name': 'Bash', 'error': 'Exit code 1', 'is_interrupt': False})
         self.assertEqual(snapshot(self.db)['state'], 'working')
 
+    def test_aborted_turn_stays_red_until_the_next_prompt(self):
+        # Claude Code sends StopFailure (no Stop) when an API error ends the turn.
+        record(self.db, agent='claude', sid='two', event='UserPromptSubmit', at=100)
+        record(self.db, agent='claude', sid='two', event='StopFailure', at=101)
+        self.assertEqual(snapshot(self.db, now=1000)['state'], 'error')
+        self.assertEqual(snapshot(self.db, now=3702)['state'], 'unknown')
+        record(self.db, agent='claude', sid='two', event='UserPromptSubmit', at=3800)
+        self.assertEqual(snapshot(self.db, now=3801)['state'], 'working')
+
     def test_partial_json_line_and_explicit_completion(self):
         path = self.root / 'rollout.jsonl'
         stamp = time.strftime('%Y-%m-%dT%H:%M:%S', time.gmtime()) + 'Z'
@@ -244,6 +253,11 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(json.loads(installed)['model'], 'unchanged')
         removed = json.loads(claude_text(installed, 'screen-command', remove=True))
         self.assertEqual(removed, original)
+
+    def test_claude_registers_aborted_turns(self):
+        installed = json.loads(claude_text('{}', 'screen-command'))
+        self.assertEqual(installed['hooks']['StopFailure'],
+                         [{'hooks': [{'type': 'command', 'command': 'screen-command', 'timeout': 2}]}])
 
 
 if __name__ == '__main__':
