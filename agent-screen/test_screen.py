@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 
 from ds339 import WIDTH, HEIGHT, packet, parse_edid
-from configure_hooks import codex_text, claude_text
+from configure_hooks import codex_text, claude_text, install
 from state import connect, hook_event, record, snapshot, reconcile_owners
 from process_owner import process_birth, process_matches
 from watch import Tail, Watcher
@@ -216,6 +216,26 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(len(parsed['hooks']['PreToolUse']), 2)
         removed = codex_text(second, '', remove=True)
         self.assertEqual(tomllib.loads(removed), tomllib.loads(original))
+
+    def test_codex_rebuild_keeps_trust_saved_inside_the_block(self):
+        import tomllib
+        cmd = 'python "screen.py" hook --agent codex'
+        installed = codex_text('model="original"\n', cmd)
+        # Seen on the host: /hooks review saved its trust tables between two of this block's hooks.
+        trust = "[hooks.state]\n\n[hooks.state.'config.toml:stop:0:0']\ntrusted_hash = \"sha256:abc\"\n\n"
+        at = installed.index('[[hooks.PostToolUse]]')
+        live = installed[:at] + trust + installed[at:]
+        rebuilt = codex_text(live, cmd)
+        self.assertEqual(tomllib.loads(rebuilt), tomllib.loads(live))
+        self.assertEqual(rebuilt, codex_text(rebuilt, cmd))
+        removed = tomllib.loads(codex_text(live, '', remove=True))
+        self.assertEqual(removed['hooks'], {'state': tomllib.loads(live)['hooks']['state']})
+
+    def test_install_leaves_equivalent_files_untouched(self):
+        home = Path(tempfile.mkdtemp(dir=ARTIFACTS))
+        self.assertTrue(all(r['applied'] for r in install(home, home / 'data', apply=True)))
+        again = install(home, home / 'data', apply=True)
+        self.assertEqual([(r['applied'], r['backup']) for r in again], [(False, None), (False, None)])
 
     def test_claude_preserves_unrelated_settings_and_handlers(self):
         original = {'model': 'unchanged', 'hooks': {'Stop': [{'hooks': [{'type': 'command', 'command': 'keep-me'}]}]}}

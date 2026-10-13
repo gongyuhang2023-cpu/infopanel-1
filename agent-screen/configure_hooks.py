@@ -27,8 +27,19 @@ def command(script, data_root, agent):
 
 
 def codex_text(original, cmd, remove=False):
-    text = re.sub(r'(?m)^' + re.escape(BEGIN) + r'\r?\n.*?^' + re.escape(END) + r'[^\n]*\n?',
-                  '', original, flags=re.S)
+    kept = []
+
+    def strip(match):
+        # Codex saves hook trust ([hooks.state...] tables) where it likes, including inside this block.
+        for part in re.split(r'(?m)^(?=\[)', match.group(1)):
+            if part.startswith('[') and not part.startswith('[[hooks.'):
+                kept.append(part.rstrip() + '\n')
+        return ''
+
+    text = re.sub(r'(?m)^' + re.escape(BEGIN) + r'\r?\n(.*?)^' + re.escape(END) + r'[^\n]*\n?',
+                  strip, original, flags=re.S)
+    if kept:
+        text = text.rstrip() + '\n\n' + '\n'.join(kept)
     if not remove:
         parts = [BEGIN]
         for event in CODEX_EVENTS:
@@ -63,18 +74,20 @@ def claude_text(original, cmd, remove=False):
 
 def install(home, data_root, apply=False, remove=False):
     script = Path(__file__).with_name('screen.py')
-    paths = [(home / '.codex' / 'config.toml', 'codex', codex_text),
-             (home / '.claude' / 'settings.json', 'claude', claude_text)]
+    paths = [(home / '.codex' / 'config.toml', 'codex', codex_text, tomllib.loads),
+             (home / '.claude' / 'settings.json', 'claude', claude_text, json.loads)]
     planned = []
-    for path, agent, transform in paths:
+    for path, agent, transform, parse in paths:
         original = path.read_text(encoding='utf-8-sig') if path.exists() else ''
         cmd = command(script, data_root, agent)
         updated = transform(original, cmd, remove)
-        planned.append((path, updated))
+        # An equivalent file is left alone rather than rewritten, e.g. with moved trust tables.
+        changed = not original.strip() or parse(original) != parse(updated)
+        planned.append((path, updated, changed))
     result = []
-    for path, updated in planned:
+    for path, updated, changed in planned:
         backup = None
-        if apply:
+        if apply and changed:
             path.parent.mkdir(parents=True, exist_ok=True)
             if path.exists():
                 backups = path.parent / 'backups' / 'agent-screen'
@@ -84,7 +97,7 @@ def install(home, data_root, apply=False, remove=False):
             tmp = path.with_name(path.name + '.agent-screen.tmp')
             tmp.write_text(updated, encoding='utf-8')
             tmp.replace(path)
-        result.append({'path': str(path), 'applied': apply, 'remove': remove,
+        result.append({'path': str(path), 'applied': apply and changed, 'remove': remove,
                        'backup': str(backup) if backup else None})
     return result
 

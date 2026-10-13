@@ -121,7 +121,7 @@ powershell.exe -NoProfile -File .\agent-screen\Set-Autostart.ps1 -Action Disable
 
 安装会追加到 `%USERPROFILE%\.codex\config.toml` 与 `.claude\settings.json`。
 其他设置及 hooks 保留。原文件分别备份在这两个配置目录内的 `backups/agent-screen/`，
-不会复制到本仓库。
+不会复制到本仓库。Codex 写进本组件区块内的 hook 信任记录会保留；内容等价的文件不改写、不备份。
 
 Codex 新 hooks 需要在 `/hooks` 中信任后才会执行。事件分组内的命令含
 `agent-screen/screen.py`。旧会话可能继续使用启动时的配置；新会话加载新 hooks。
