@@ -158,6 +158,14 @@ class StateTests(unittest.TestCase):
         self.assertEqual(row['project'], '实验')
         self.assertNotIn('PRIVATE_PROMPT', json.dumps(row))
 
+    def test_failed_tool_call_from_background_helper_is_not_an_error(self):
+        # Seen in plan mode: the parent turn ended, a helper's search exited 1 and the helper carried on.
+        hook_event(self.db, 'claude', {'session_id': 'plan', 'hook_event_name': 'Stop', 'cwd': 'C:/work/plan'})
+        hook_event(self.db, 'claude', {'session_id': 'plan', 'hook_event_name': 'PreToolUse', 'tool_name': 'Bash'})
+        hook_event(self.db, 'claude', {'session_id': 'plan', 'hook_event_name': 'PostToolUseFailure',
+                                     'tool_name': 'Bash', 'error': 'Exit code 1', 'is_interrupt': False})
+        self.assertEqual(snapshot(self.db)['state'], 'working')
+
     def test_partial_json_line_and_explicit_completion(self):
         path = self.root / 'rollout.jsonl'
         stamp = time.strftime('%Y-%m-%dT%H:%M:%S', time.gmtime()) + 'Z'

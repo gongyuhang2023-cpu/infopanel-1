@@ -99,8 +99,9 @@ def record(db, *, agent, sid, event, cwd='', turn_id='', at=None, origin='hook',
             status, pending = 'waiting', 2
         elif event in ('ask_async', 'ask_sync'):
             status, pending = 'waiting', 1 if event == 'ask_async' else 2
-        elif event in ('PreToolUse', 'PostToolUse', 'activity', 'PreCompact', 'PostCompact'):
+        elif event in ('PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'activity', 'PreCompact', 'PostCompact'):
             # Async questions remain visible even while the agent continues other work.
+            # A failed tool call (non-zero exit, search timeout) is routine; the agent carries on.
             if pending == 1:
                 status = 'waiting'
             else:
@@ -113,7 +114,7 @@ def record(db, *, agent, sid, event, cwd='', turn_id='', at=None, origin='hook',
             status = 'waiting' if pending == 1 else 'done'
             if pending != 1:
                 pending = 0
-        elif event in ('PostToolUseFailure', 'StopFailure'):
+        elif event == 'StopFailure':
             status = 'error'
         elif event in ('Interrupt', 'SessionEnd', 'turn_aborted'):
             status, pending = 'idle', 0
