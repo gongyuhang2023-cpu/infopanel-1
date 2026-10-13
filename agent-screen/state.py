@@ -23,7 +23,23 @@ def connect(root: Path):
         agent TEXT NOT NULL, sid TEXT NOT NULL, pid INTEGER NOT NULL,
         birth INTEGER NOT NULL, observed REAL NOT NULL, source TEXT NOT NULL,
         closed INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(agent,sid,pid,birth))''')
+    db.execute('''CREATE TABLE IF NOT EXISTS session_titles (
+        agent TEXT NOT NULL, sid TEXT NOT NULL, title TEXT NOT NULL,
+        manual INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(agent,sid))''')
     return db
+
+
+def set_title(db, agent, sid, title, manual=False):
+    """The agent's own conversation name. A /rename title is never replaced by an automatic one."""
+    title = ' '.join(str(title or '').split())[:120]
+    if agent not in ('codex', 'claude') or not sid or not title:
+        return False
+    with db:
+        db.execute('BEGIN IMMEDIATE')
+        db.execute('''INSERT INTO session_titles VALUES (?,?,?,?)
+            ON CONFLICT(agent,sid) DO UPDATE SET title=excluded.title, manual=excluded.manual
+            WHERE excluded.manual >= session_titles.manual''', (agent, str(sid)[:180], title, int(manual)))
+    return True
 
 
 def _bind_owner(db, agent, sid, owner, at, source):
@@ -151,7 +167,8 @@ def snapshot(db, now=None):
     now = time.time() if now is None else now
     rows = []
     live = {(r['agent'], r['sid']) for r in db.execute('SELECT agent,sid FROM session_owners WHERE closed=0')}
-    for row in db.execute('''SELECT s.* FROM sessions s WHERE updated > ? OR EXISTS
+    for row in db.execute('''SELECT s.*, COALESCE(t.title, '') AS title FROM sessions s
+        LEFT JOIN session_titles t ON t.agent=s.agent AND t.sid=s.sid WHERE s.updated > ? OR EXISTS
         (SELECT 1 FROM session_owners o WHERE o.agent=s.agent AND o.sid=s.sid AND o.closed=0)''', (now - 86400,)):
         if row['event'] in ('SessionEnd', 'ProcessExit'):
             continue

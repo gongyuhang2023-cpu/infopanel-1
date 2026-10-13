@@ -79,7 +79,7 @@ def render(data, demo=False):
         d.rounded_rectangle((366, y + 13, 371, y + card_height - 13), radius=2, fill=color)
         middle = y + card_height / 2
         d.text((391, middle), str(i + 1), font=font(24, True), fill=color, anchor='mm')
-        title = fitted(d, session['project'], 30, 378, True)
+        title = fitted(d, session.get('title') or session['project'], 30, 378, True)
         d.text((413, middle), title, font=font(30, True), fill=WHITE, anchor='lm')
         d.text((814, middle), SHORT[session['state']], font=font(26, True), fill=color, anchor='lm')
     if demo:

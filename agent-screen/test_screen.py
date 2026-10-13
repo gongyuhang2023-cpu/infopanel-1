@@ -191,6 +191,36 @@ class StateTests(unittest.TestCase):
         tail.poll(self.db)
         self.assertEqual(snapshot(self.db)['state'], 'done')
 
+    def test_claude_rename_beats_automatic_titles_and_untitled_keeps_folder(self):
+        path = self.root / 'claude.jsonl'
+        stamp = time.strftime('%Y-%m-%dT%H:%M:%S', time.gmtime()) + 'Z'
+        lines = [{'type': 'user', 'sessionId': 'chat', 'cwd': 'C:/work/folder', 'timestamp': stamp,
+                  'message': {'role': 'user', 'content': 'hi'}},
+                 {'type': 'ai-title', 'aiTitle': '自动标题', 'sessionId': 'chat'},
+                 {'type': 'custom-title', 'customTitle': '我的名字', 'sessionId': 'chat'},
+                 {'type': 'ai-title', 'aiTitle': '新的自动标题', 'sessionId': 'chat'}]
+        path.write_text(''.join(json.dumps(x, ensure_ascii=False) + '\n' for x in lines), encoding='utf-8')
+        Tail(path, 'claude').poll(self.db)
+        self.event('UserPromptSubmit')
+        rows = {r['sid']: r for r in snapshot(self.db)['sessions']}
+        self.assertEqual(rows['chat']['title'], '我的名字')
+        self.assertEqual((rows['one']['title'], rows['one']['project']), ('', 'project'))
+
+    def test_codex_thread_name_follows_the_last_index_entry(self):
+        index = self.root / '.codex' / 'session_index.jsonl'
+        index.parent.mkdir()
+        names = [{'id': 'one', 'thread_name': '起草方案'}, {'id': 'one', 'thread_name': '数据清洗'}]
+        index.write_text(''.join(json.dumps(x, ensure_ascii=False) + '\n' for x in names), encoding='utf-8')
+        self.event('UserPromptSubmit')
+        watcher = Watcher(home=self.root)
+        watcher.process_monitor.last_discovery = time.time()
+        watcher.poll(self.db)
+        self.assertEqual(snapshot(self.db)['sessions'][0]['title'], '数据清洗')
+        with index.open('a', encoding='utf-8') as f:
+            f.write(json.dumps({'id': 'one', 'thread_name': '改过的名字'}, ensure_ascii=False) + '\n')
+        watcher.poll(self.db)
+        self.assertEqual(snapshot(self.db)['sessions'][0]['title'], '改过的名字')
+
 
 class TransportTests(unittest.TestCase):
     def test_frame_matches_captured_native_geometry(self):

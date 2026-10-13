@@ -10,7 +10,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from state import record
+from state import record, set_title
 from process_owner import ProcessMonitor
 
 
@@ -28,6 +28,7 @@ class Tail:
         self.sid = path.stem
         self.cwd = ''
         self.turn_id = ''
+        self.title = None
         self.initial = True
         self.ignored = False
 
@@ -109,6 +110,14 @@ class Tail:
                 return
             self.sid = obj.get('sessionId') or self.sid
             self.cwd = obj.get('cwd') or self.cwd
+            if obj.get('type') in ('ai-title', 'custom-title'):
+                # Claude Code re-appends its title near the end of the log; /rename writes custom-title.
+                manual = obj['type'] == 'custom-title'
+                title = (obj.get('customTitle' if manual else 'aiTitle'), manual)
+                if title != self.title:
+                    self.title = title
+                    set_title(db, 'claude', self.sid, *title)
+                return
             msg = obj.get('message', {})
             if obj.get('type') == 'user':
                 content = msg.get('content', [])
@@ -124,11 +133,44 @@ class Tail:
                    turn_id=self.turn_id, at=at, origin='local-session', tool=tool)
 
 
+class CodexNames:
+    """Codex appends each thread name (automatic or /rename) to one index; the last entry wins."""
+    def __init__(self, path):
+        self.path, self.offset, self.names = path, 0, {}
+
+    def poll(self, db):
+        try:
+            size = self.path.stat().st_size
+        except OSError:
+            return
+        if size < self.offset:
+            self.offset = 0
+        if size == self.offset:
+            return
+        latest = {}
+        with self.path.open('rb') as f:
+            f.seek(self.offset)
+            for line in f:
+                if not line.endswith(b'\n'):
+                    break
+                self.offset += len(line)
+                try:
+                    obj = json.loads(line)
+                    latest[str(obj['id'])] = obj['thread_name']
+                except (ValueError, TypeError, KeyError):
+                    continue
+        for sid, name in latest.items():
+            if name and self.names.get(sid) != name:
+                self.names[sid] = name
+                set_title(db, 'codex', sid, name)
+
+
 class Watcher:
     def __init__(self, home=None):
         self.home = Path.home() if home is None else Path(home)
         self.tails = {}
         self.last_scan = 0
+        self.codex_names = CodexNames(self.home / '.codex' / 'session_index.jsonl')
         self.process_monitor = ProcessMonitor()
 
     def poll(self, db):
@@ -158,4 +200,5 @@ class Watcher:
                 tail.poll(db)
             except OSError:
                 continue
+        self.codex_names.poll(db)
         self.process_monitor.poll(db)
