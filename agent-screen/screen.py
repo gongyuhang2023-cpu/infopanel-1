@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import getpass
 import json
 import os
 import sys
 import time
+from ctypes import wintypes
 from pathlib import Path
 
 from state import connect, hook_event, snapshot, write_json
@@ -32,6 +34,41 @@ def acquire_mutex():
         kernel.CloseHandle(handle)
         raise RuntimeError('Another Agent Screen instance already owns the screen')
     return kernel, handle
+
+
+class _SessionLevel1(ctypes.Structure):  # WTSINFOEX_LEVEL1_W
+    _fields_ = [('session', wintypes.ULONG), ('state', ctypes.c_int), ('flags', wintypes.LONG),
+                ('station', wintypes.WCHAR * 33), ('user', wintypes.WCHAR * 21), ('domain', wintypes.WCHAR * 18),
+                ('times', ctypes.c_longlong * 5), ('counters', wintypes.DWORD * 6)]
+
+
+class _SessionInfo(ctypes.Structure):  # WTSINFOEXW
+    _fields_ = [('level', wintypes.DWORD), ('data', _SessionLevel1)]
+
+
+def console_locked():
+    """True unless the physical console shows this user's unlocked desktop. Errors count as locked."""
+    try:
+        kernel = ctypes.WinDLL('kernel32')
+        wts = ctypes.WinDLL('wtsapi32')
+        kernel.WTSGetActiveConsoleSessionId.restype = wintypes.DWORD
+        wts.WTSQuerySessionInformationW.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.c_int,
+                                                    ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(wintypes.DWORD)]
+        wts.WTSFreeMemory.argtypes = [ctypes.c_void_p]
+        console = kernel.WTSGetActiveConsoleSessionId()
+        if console == 0xFFFFFFFF:  # Console between sessions; this value would also mean "current session".
+            return True
+        buffer, size = ctypes.c_void_p(), wintypes.DWORD()
+        if not wts.WTSQuerySessionInformationW(None, console, 25, ctypes.byref(buffer), ctypes.byref(size)):
+            return True  # 25 = WTSSessionInfoEx
+        try:
+            info = ctypes.cast(buffer, ctypes.POINTER(_SessionInfo)).contents.data
+            # Active (not taken over by Remote Desktop), unlocked (flag 1; reversed only on Windows 7), and this user.
+            return not (info.state == 0 and info.flags == 1 and info.user.lower() == getpass.getuser().lower())
+        finally:
+            wts.WTSFreeMemory(buffer)
+    except Exception:
+        return True
 
 
 def save_frame(image, root):
@@ -65,7 +102,7 @@ def run(args):
                 data = demo_data(args.state)
             else:
                 watcher.poll(db)
-                data = snapshot(db)
+                data = {**snapshot(db), 'private': console_locked()}
             image = render(data, demo=args.command == 'demo')
             try:
                 save_frame(image, root)

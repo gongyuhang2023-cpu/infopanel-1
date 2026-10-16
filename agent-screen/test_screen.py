@@ -11,6 +11,7 @@ from ds339 import WIDTH, HEIGHT, packet, parse_edid
 from configure_hooks import codex_text, claude_text, install
 from state import connect, hook_event, record, snapshot, reconcile_owners
 from process_owner import process_birth, process_matches
+from render import demo_data, render
 from watch import Tail, Watcher
 
 ARTIFACTS = Path(__file__).resolve().parents[1] / '.local' / 'agent-screen-tests'
@@ -241,6 +242,17 @@ class TransportTests(unittest.TestCase):
         edid[20] ^= 1
         with self.assertRaises(RuntimeError):
             parse_edid(edid)
+
+
+class RenderTests(unittest.TestCase):
+    def test_locked_frame_draws_no_title_and_keeps_lamps_and_states(self):
+        data = demo_data()
+        renamed = {**data, 'sessions': [{**s, 'title': '另一个名字'} for s in data['sessions']]}
+        self.assertNotEqual(render(data).tobytes(), render(renamed).tobytes())
+        hidden = render({**data, 'private': True})
+        self.assertEqual(hidden.tobytes(), render({**renamed, 'private': True}).tobytes())
+        for box in ((0, 0, 400, 376), (800, 0, 960, 376)):
+            self.assertEqual(hidden.crop(box).tobytes(), render(data).crop(box).tobytes())
 
 
 class ConfigTests(unittest.TestCase):

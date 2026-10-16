@@ -4,7 +4,7 @@ from __future__ import annotations
 import time
 from functools import lru_cache
 from pathlib import Path
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
 from state import PRIORITY
 
 COLORS = {'waiting': '#FA635A', 'error': '#FA635A', 'working': '#F4C44E',
@@ -14,6 +14,8 @@ LABELS = {'waiting': '等你回应', 'error': '执行异常', 'working': '正在
 SHORT = {'waiting': '等回应', 'error': '异常', 'working': '运行中',
          'done': '已结束', 'unknown': '待确认', 'idle': '空闲'}
 BG, PANEL, WHITE, MUTED = '#101722', '#1B2533', '#F3F6FA', '#A5B3C5'
+# Word-like widths for each row's blur while the desk is locked. Fixed, so the frame never carries a title.
+SMUDGES = ((150, 96, 64), (118, 132), (88, 150, 52), (136, 104))
 
 
 @lru_cache(maxsize=24)
@@ -72,6 +74,7 @@ def render(data, demo=False):
     card_count = min(len(sessions), 4)
     card_height, gap = (78, 10) if card_count == 4 else (84, 14)
     top = (376 - (card_count * card_height + max(0, card_count - 1) * gap)) // 2
+    smudge = Image.new('L', image.size) if data.get('private') else None
     for i, session in enumerate(sessions[:4]):
         y = top + i * (card_height + gap)
         color = COLORS[session['state']]
@@ -79,9 +82,17 @@ def render(data, demo=False):
         d.rounded_rectangle((366, y + 13, 371, y + card_height - 13), radius=2, fill=color)
         middle = y + card_height / 2
         d.text((391, middle), str(i + 1), font=font(24, True), fill=color, anchor='mm')
-        title = fitted(d, session.get('title') or session['project'], 30, 378, True)
-        d.text((413, middle), title, font=font(30, True), fill=WHITE, anchor='lm')
+        if smudge is not None:
+            x = 420
+            for width in SMUDGES[i]:
+                ImageDraw.Draw(smudge).rounded_rectangle((x, middle - 11, x + width, middle + 11), radius=11, fill=170)
+                x += width + 16
+        else:
+            title = fitted(d, session.get('title') or session['project'], 30, 378, True)
+            d.text((413, middle), title, font=font(30, True), fill=WHITE, anchor='lm')
         d.text((814, middle), SHORT[session['state']], font=font(26, True), fill=color, anchor='lm')
+    if smudge is not None:
+        image.paste(WHITE, mask=smudge.filter(ImageFilter.GaussianBlur(6)))
     if demo:
         d.rounded_rectangle((12, 344, 96, 372), radius=6, fill='#354155')
         d.text((54, 357), '演示', font=font(18), fill=WHITE, anchor='mm')
