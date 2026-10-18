@@ -6,11 +6,12 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from ds339 import WIDTH, HEIGHT, packet, parse_edid
 from configure_hooks import codex_text, claude_text, install
 from state import connect, hook_event, record, snapshot, reconcile_owners
-from process_owner import process_birth, process_matches
+from process_owner import discover_codex_owners, process_birth, process_matches
 from render import demo_data, render
 from watch import Tail, Watcher
 
@@ -108,6 +109,15 @@ class StateTests(unittest.TestCase):
         self.event('Stop', at=101, owner=(789, 1000))
         reconcile_owners(self.db, lambda pid, birth: pid == 789, now=102)
         self.assertEqual(snapshot(self.db, now=103)['state'], 'done')
+
+    @unittest.skipUnless(os.name == 'nt', 'Native Windows process identity test')
+    def test_running_out_of_memory_while_listing_codex_files_is_skipped(self):
+        class Codex:
+            pid, info = os.getpid(), {'pid': os.getpid(), 'name': 'codex.exe'}
+            def cmdline(self): return ['codex.exe']
+            def open_files(self): raise MemoryError
+        with mock.patch('psutil.process_iter', return_value=[Codex()]):
+            self.assertEqual(discover_codex_owners(), [])
 
     @unittest.skipUnless(os.name == 'nt', 'Native Windows process identity test')
     def test_real_process_exit_clears_completed_session_without_an_end_hook(self):

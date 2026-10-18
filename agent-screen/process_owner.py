@@ -116,8 +116,8 @@ def discover_codex_owners():
                 match = pattern.search(path.name)
                 if match and path.name.startswith('rollout-'):
                     found.append(('codex', match.group(1), (proc.pid, birth)))
-        except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
-            continue
+        except (psutil.NoSuchProcess, psutil.AccessDenied, OSError, MemoryError):
+            continue  # open_files() copies the whole system handle table; that fails when memory runs out.
     return found
 
 
