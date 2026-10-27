@@ -51,10 +51,30 @@ def _bind_owner(db, agent, sid, owner, at, source):
             (agent, sid, pid, birth, at, source))
 
 
-def bind_owner(db, agent, sid, owner, source='hook'):
+def bind_owner(db, agent, sid, owner, source='hook', project=''):
+    """Bind a live process found without a hook (an open transcript, Claude's session registry).
+
+    A conversation reopened in a new process (after a restart, or a manual resume) shows
+    again as idle even if the hook that would announce it never ran. ProcessExit means every
+    known owner died, so any live owner revives it; SessionEnd happened inside a running
+    process, so only a different process may bring that conversation back.
+    """
+    pid, birth = owner
+    if pid <= 0 or birth <= 0:
+        return
     with db:
         db.execute('BEGIN IMMEDIATE')
-        _bind_owner(db, agent, sid, owner, time.time(), source)
+        now = time.time()
+        known = db.execute('SELECT 1 FROM session_owners WHERE agent=? AND sid=? AND pid=? AND birth=?',
+                           (agent, sid, pid, birth)).fetchone()
+        _bind_owner(db, agent, sid, owner, now, source)
+        row = db.execute('SELECT event FROM sessions WHERE agent=? AND sid=?', (agent, sid)).fetchone()
+        if row is None:
+            db.execute('INSERT INTO sessions VALUES (?,?,?,?,?,?,?,?,?,?)',
+                       (agent, sid, (project or '未命名项目')[:120], 'idle', 'SessionStart', source, now, now, '', 0))
+        elif row['event'] == 'ProcessExit' or (row['event'] == 'SessionEnd' and not known):
+            db.execute('''UPDATE sessions SET state='idle', event='SessionStart', origin=?, updated=?,
+                started=?, pending=0 WHERE agent=? AND sid=?''', (source, now, now, agent, sid))
 
 
 def reconcile_owners(db, is_alive, now=None):

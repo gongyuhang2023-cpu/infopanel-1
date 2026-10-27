@@ -171,7 +171,7 @@ class Watcher:
         self.tails = {}
         self.last_scan = 0
         self.codex_names = CodexNames(self.home / '.codex' / 'session_index.jsonl')
-        self.process_monitor = ProcessMonitor()
+        self.process_monitor = ProcessMonitor(self.home)
 
     def poll(self, db):
         now = time.time()

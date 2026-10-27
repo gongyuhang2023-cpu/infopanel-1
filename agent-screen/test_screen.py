@@ -10,8 +10,8 @@ from unittest import mock
 
 from ds339 import WIDTH, HEIGHT, packet, parse_edid
 from configure_hooks import codex_text, claude_text, install
-from state import connect, hook_event, record, snapshot, reconcile_owners
-from process_owner import discover_codex_owners, process_birth, process_matches
+from state import _bind_owner, bind_owner, connect, hook_event, record, snapshot, reconcile_owners
+from process_owner import discover_claude_owners, discover_codex_owners, process_birth, process_matches
 from render import demo_data, render
 from watch import Tail, Watcher
 
@@ -109,6 +109,47 @@ class StateTests(unittest.TestCase):
         self.event('Stop', at=101, owner=(789, 1000))
         reconcile_owners(self.db, lambda pid, birth: pid == 789, now=102)
         self.assertEqual(snapshot(self.db, now=103)['state'], 'done')
+
+    def test_conversation_reopened_in_a_new_process_shows_as_idle(self):
+        self.event('Stop', at=100, owner=(123, 456))
+        reconcile_owners(self.db, lambda pid, birth: False, now=101)  # e.g. Windows restarted
+        self.assertEqual(snapshot(self.db, now=102)['sessions'], [])
+        bind_owner(self.db, 'codex', 'one', (789, 1000), source='open-transcript')
+        rows = snapshot(self.db)['sessions']
+        self.assertEqual([(r['sid'], r['state'], r['process_bound']) for r in rows], [('one', 'idle', True)])
+
+    def test_live_owner_bound_earlier_still_revives_an_exited_conversation(self):
+        self.event('Stop', at=100, owner=(123, 456))
+        reconcile_owners(self.db, lambda pid, birth: False, now=101)
+        with self.db:  # bound by an earlier version that did not revive
+            _bind_owner(self.db, 'codex', 'one', (789, 1000), 102, 'open-transcript')
+        self.assertEqual(snapshot(self.db, now=103)['sessions'], [])
+        bind_owner(self.db, 'codex', 'one', (789, 1000), source='open-transcript')
+        self.assertEqual(snapshot(self.db)['sessions'][0]['state'], 'idle')
+
+    def test_same_process_never_revives_a_conversation_that_ended_in_it(self):
+        self.event('UserPromptSubmit', at=100, owner=(123, 456))
+        self.event('SessionEnd', at=101, owner=(123, 456))
+        bind_owner(self.db, 'codex', 'one', (123, 456), source='open-transcript')
+        self.assertEqual(snapshot(self.db)['sessions'], [])
+
+    def test_unknown_conversation_with_a_live_process_is_listed(self):
+        bind_owner(self.db, 'claude', 'new', (5, 6), source='session-registry', project='notes')
+        row = snapshot(self.db)['sessions'][0]
+        self.assertEqual((row['agent'], row['project'], row['state']), ('claude', 'notes', 'idle'))
+
+    @unittest.skipUnless(os.name == 'nt', 'Native Windows process identity test')
+    def test_claude_registry_lists_live_interactive_sessions_only(self):
+        folder = self.root / '.claude' / 'sessions'
+        folder.mkdir(parents=True)
+        me, birth = os.getpid(), process_birth(os.getpid())
+        entries = {'live': {'pid': me, 'sessionId': 'abc', 'procStart': str(birth), 'kind': 'interactive',
+                            'cwd': 'C:/work/notes'},
+                   'stale': {'pid': me, 'sessionId': 'old', 'procStart': '42', 'kind': 'interactive'},
+                   'print': {'pid': me, 'sessionId': 'p', 'procStart': str(birth), 'kind': 'sdk-cli'}}
+        for name, info in entries.items():
+            (folder / (name + '.json')).write_text(json.dumps(info), encoding='utf-8')
+        self.assertEqual(discover_claude_owners(self.root), [('claude', 'abc', (me, birth), 'notes')])
 
     @unittest.skipUnless(os.name == 'nt', 'Native Windows process identity test')
     def test_running_out_of_memory_while_listing_codex_files_is_skipped(self):

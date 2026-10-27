@@ -119,6 +119,9 @@ powershell.exe -NoProfile -File .\agent-screen\Set-Autostart.ps1 -Action Disable
    只额外保存 Agent 自己记录的对话名，自动标题由对话内容概括而来。
 3. **终端存活检测**：hooks 用 Windows 只读进程信息绑定 PID 和创建时间；后台检查已绑定进程是否退出。
    对已打开的 Codex 终端，后台也可通过其已打开的会话日志建立绑定。无法读取进程信息时保留未知状态。
+   Claude 终端还可通过它自己的进程登记 `~/.claude/sessions/<pid>.json` 建立绑定（核对进程创建时间）。
+   对话在新进程里重新打开时（重启后恢复、手动 resume），即使 hook 没赶上，后台每 15 秒的检查也会把它显示为空闲。
+   已在运行中的进程里结束的对话不会因此重新出现。
 
 安装或重新安装 hooks（默认只预览，加 `--apply` 才写配置）：
 

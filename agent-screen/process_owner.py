@@ -7,6 +7,7 @@ fallback for sessions that were already open when monitoring started.
 from __future__ import annotations
 
 import ctypes
+import json
 import os
 import re
 import time
@@ -121,8 +122,32 @@ def discover_codex_owners():
     return found
 
 
+def discover_claude_owners(home):
+    """Interactive Claude Code processes, from Claude's own registry ~/.claude/sessions/<pid>.json.
+
+    Covers sessions whose SessionStart hook never ran (a resume while the machine is busy
+    after a restart). A file left by an earlier process with the same PID fails the birth check.
+    """
+    found = []
+    for path in (Path(home) / '.claude' / 'sessions').glob('*.json'):
+        try:
+            if path.stat().st_size > 65536:
+                continue
+            info = json.loads(path.read_text(encoding='utf-8'))
+            pid, sid = int(info.get('pid') or path.stem), str(info.get('sessionId') or '')
+        except (OSError, ValueError, TypeError, AttributeError):
+            continue
+        if info.get('kind') != 'interactive' or not sid:
+            continue
+        birth = process_birth(pid)
+        if birth and str(info.get('procStart', '')) == str(birth):
+            found.append(('claude', sid, (pid, birth), Path(str(info.get('cwd') or '')).name))
+    return found
+
+
 class ProcessMonitor:
-    def __init__(self):
+    def __init__(self, home=None):
+        self.home = Path.home() if home is None else Path(home)
         self.last_discovery = 0
 
     def poll(self, db):
@@ -131,5 +156,7 @@ class ProcessMonitor:
         if os.name == 'nt' and now - self.last_discovery >= 15:
             for agent, sid, owner in discover_codex_owners():
                 bind_owner(db, agent, sid, owner, source='open-transcript')
+            for agent, sid, owner, project in discover_claude_owners(self.home):
+                bind_owner(db, agent, sid, owner, source='session-registry', project=project)
             self.last_discovery = now
         reconcile_owners(db, process_matches)
