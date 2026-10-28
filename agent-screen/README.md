@@ -38,9 +38,15 @@ Windows 10/11 x64，以及原厂已安装的 `libusb0` 驱动。依赖见 `requi
 所有个人状态、预览图、日志和测试记录都在 git-ignored 的 `.local/`。
 登录自启只在当前用户启动文件夹新增 `Agent Signal - DS339.lnk`；不修改 PATH、桌面快捷方式或系统服务。
 
+启动脚本先起一个守护进程（`screen.py supervise`），由它运行显示进程。显示进程意外退出时，
+包括 Python 解释器自身崩溃这种程序内部拦不住的情况，守护进程 5 秒后重新启动它；
+启动后 10 分钟内又退出，间隔逐次加倍，最长 5 分钟。只有 `Stop-Screen.ps1` 发出的停止请求会让两者一起退出；
+直接结束显示进程会被当作崩溃，随后重启。
+
 - 图像预览：`.local/agent-screen/frame.png`
 - 运行状态：`.local/agent-screen/status.json`
-- 运行报错：`.local/agent-screen/stderr.log`
+- 运行报错：`.local/agent-screen/stderr.log`。追加写入，每次启动、退出各记一行（含退出码），
+  重启后崩溃记录仍在；超过 1 MB 时改名为 `stderr.old.log`。守护进程自身的报错在 `supervisor.log`。
 - 画面倒置：停止后用 `Start-Screen.ps1 -Rotation 270` 启动；默认 `90`。
 - 回到原厂显示：先停止 Agent 信号站，再启动 JONSBO-AIO。
 
@@ -175,7 +181,7 @@ Claude Code 的注册命令通过模拟事件验证，真实 Claude 会话尚待
 
 `ds339.py` 将 InfoPanel 的 DS339 USB 通信部分移植为 Python，复用原厂驱动。
 发送前校验 EDID 和唯一设备，只接受 376×960 面板。设备断开后定期重连；原厂程序正在运行时不接管。
-单实例互斥防止本组件的两个进程争抢屏幕。
+单实例互斥防止本组件的两个进程争抢屏幕，守护进程同样只运行一个。
 
 `state.py` 管理状态；`watch.py` 读取已有会话；`process_owner.py` 检查终端进程；
 `render.py` 生成画面；`screen.py` 负责运行。

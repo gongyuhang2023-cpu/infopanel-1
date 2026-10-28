@@ -26,11 +26,12 @@ if (Test-Path -LiteralPath $statusPath) {
         }
     } catch { Write-Warning 'Previous screen status is unavailable; checking the process mutex at startup.' }
 }
-$arguments = '"' + $script + '" --data-root "' + $dataRoot + '" run --rotation ' + $Rotation
+# The supervisor restarts the screen after a crash and appends each run's errors to stderr.log.
+$arguments = '"' + $script + '" --data-root "' + $dataRoot + '" supervise --rotation ' + $Rotation
 if (-not $PreviewOnly) { $arguments += ' --usb' }
 $process = Start-Process -FilePath $pythonw -ArgumentList $arguments -WindowStyle Hidden -PassThru `
     -RedirectStandardOutput (Join-Path $dataRoot 'stdout.log') `
-    -RedirectStandardError (Join-Path $dataRoot 'stderr.log')
+    -RedirectStandardError (Join-Path $dataRoot 'supervisor.log')
 Write-Output ('Agent Screen started: PID ' + $process.Id)
 Write-Output ('Status: ' + (Join-Path $dataRoot 'status.json'))
 Write-Output ('Preview: ' + (Join-Path $dataRoot 'frame.png'))

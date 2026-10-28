@@ -1,14 +1,17 @@
+import argparse
 import json
 import os
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
 from unittest import mock
 
 from ds339 import WIDTH, HEIGHT, packet, parse_edid
+from screen import supervise
 from configure_hooks import codex_text, claude_text, install
 from state import _bind_owner, bind_owner, connect, hook_event, record, snapshot, reconcile_owners
 from process_owner import discover_claude_owners, discover_codex_owners, process_birth, process_matches
@@ -293,6 +296,38 @@ class TransportTests(unittest.TestCase):
         edid[20] ^= 1
         with self.assertRaises(RuntimeError):
             parse_edid(edid)
+
+
+@unittest.skipUnless(os.name == 'nt', 'Windows mutex and process test')
+class SupervisorTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.args = argparse.Namespace(data_root=self.root, usb=False, rotation=90)
+        self.mutex = f'Local\\AgentScreenTest{os.getpid()}'
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def child(self, code):
+        # Counts its runs; `code` decides the exit code and may write a stop request.
+        return [sys.executable, '-c', 'import pathlib, sys; runs = pathlib.Path(sys.argv[1]) / "runs"; '
+                'n = len(runs.read_text()) + 1 if runs.exists() else 1; runs.write_text("x" * n); ' + code,
+                str(self.root)]
+
+    def test_crashed_run_is_restarted_and_logged_until_a_stop_request(self):
+        stop = 'n == 3 and (runs.parent / "stop.json").write_text("{}"); sys.exit(0 if n == 3 else 3)'
+        supervise(self.args, self.child(stop), self.mutex, delays=(0, 0))
+        self.assertEqual((self.root / 'runs').read_text(), 'xxx')
+        log = (self.root / 'stderr.log').read_text()
+        self.assertEqual([line.split()[-1] for line in log.splitlines() if 'exited' in line], ['0x3', '0x3', '0x0'])
+
+    def test_stop_during_the_restart_delay_is_not_restarted(self):
+        threading.Timer(.5, (self.root / 'stop.json').write_text, ['{}']).start()
+        began = time.time()
+        supervise(self.args, self.child('sys.exit(3)'), self.mutex, delays=(30, 30))
+        self.assertLess(time.time() - began, 10)
+        self.assertEqual((self.root / 'runs').read_text(), 'x')
 
 
 class RenderTests(unittest.TestCase):

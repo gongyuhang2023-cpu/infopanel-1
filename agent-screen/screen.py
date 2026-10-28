@@ -6,6 +6,7 @@ import ctypes
 import getpass
 import json
 import os
+import subprocess
 import sys
 import time
 from ctypes import wintypes
@@ -22,11 +23,11 @@ def vendor_running():
             if (p.info['name'] or '').lower() in ('jonsbo-aio.exe', 'jonsbocanvas.exe', 'infopanel.exe')]
 
 
-def acquire_mutex():
+def acquire_mutex(name='Local\\AgentScreenDS339'):
     kernel = ctypes.WinDLL('kernel32', use_last_error=True)
     kernel.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_bool, ctypes.c_wchar_p]
     kernel.CreateMutexW.restype = ctypes.c_void_p
-    handle = kernel.CreateMutexW(None, False, 'Local\\AgentScreenDS339')
+    handle = kernel.CreateMutexW(None, False, name)
     if not handle:
         raise ctypes.WinError(ctypes.get_last_error())
     if ctypes.get_last_error() == 183:
@@ -155,6 +156,57 @@ def run(args):
         kernel.CloseHandle(handle)
 
 
+def stop_requested(root, since):
+    try:
+        return (root / 'stop.json').stat().st_mtime > since
+    except OSError:
+        return False
+
+
+def open_log(root):
+    log = root / 'stderr.log'
+    try:
+        if log.exists() and log.stat().st_size > 1_000_000:
+            log.replace(root / 'stderr.old.log')
+        return log.open('ab')
+    except OSError:
+        return open(os.devnull, 'ab')  # Losing a log must not stop the restarts.
+
+
+def supervise(args, command=None, mutex='Local\\AgentScreenDS339Supervisor', delays=(5, 300)):
+    """Restart `run` until a stop request. A crash inside the interpreter skips every except/finally."""
+    root = args.data_root
+    since = time.time()
+    for attempt in range(10):  # A supervisor that was just stopped may still be exiting.
+        try:
+            kernel, handle = acquire_mutex(mutex)
+            break
+        except RuntimeError:
+            if attempt == 9:
+                raise
+            time.sleep(1)
+    command = command or [sys.executable, str(Path(__file__).absolute()), '--data-root', str(root),
+                          'run', '--rotation', str(args.rotation)] + (['--usb'] if args.usb else [])
+    delay = delays[0]
+    try:
+        while not stop_requested(root, since):
+            began = time.time()
+            with open_log(root) as err:  # Appended, so a crash report survives the restart.
+                err.write(f'--- {time.strftime("%Y-%m-%d %H:%M:%S")} started\n'.encode())
+                err.flush()
+                code = subprocess.call(command, stdout=err, stderr=err, creationflags=subprocess.CREATE_NO_WINDOW)
+                err.write(f'--- {time.strftime("%Y-%m-%d %H:%M:%S")} exited {code:#x}\n'.encode())
+            if time.time() - began > 600:
+                delay = delays[0]
+            wake = time.time() + delay
+            while time.time() < wake and not stop_requested(root, since):
+                time.sleep(.2)
+            delay = min(delay * 2, delays[1])  # Back off while it keeps crashing right after start.
+    finally:
+        kernel.CloseHandle.argtypes = [ctypes.c_void_p]
+        kernel.CloseHandle(handle)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--data-root', type=Path, default=DEFAULT_ROOT)
@@ -171,6 +223,9 @@ def main():
         sub.add_argument('--rotation', type=int, choices=[90, 270], default=90)
         if name == 'demo':
             sub.add_argument('--state', choices=['working', 'waiting', 'done'], default='working')
+    supervisor = commands.add_parser('supervise')
+    supervisor.add_argument('--usb', action='store_true')
+    supervisor.add_argument('--rotation', type=int, choices=[90, 270], default=90)
     hook = commands.add_parser('hook')
     hook.add_argument('--agent', choices=['codex', 'claude'], required=True)
     hook.add_argument('--event')
@@ -201,6 +256,8 @@ def main():
         from render import render, demo_data
         save_frame(render(demo_data(args.state), demo=True), root)
         print(str(root / 'frame.png'))
+    elif args.command == 'supervise':
+        supervise(args)
     else:
         run(args)
 
